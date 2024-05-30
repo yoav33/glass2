@@ -1,3 +1,5 @@
+from pathlib import Path
+
 print("loading...")
 import spacy
 import wikipedia as wp
@@ -17,6 +19,10 @@ import serial
 #from nltk.corpus import cmudict
 from datetime import datetime
 import requests
+import cv2
+
+# Initialize the webcam
+cap = cv2.VideoCapture(0)
 
 # Get the current date and time
 # current_time = datetime.now()
@@ -37,6 +43,7 @@ stream.start_stream()
 print("Now listening.")
 
 pulseon = True
+camoff = False
 
 # word2eq shit. keep below minimized for santiy
 def words_to_numbers(words_list):
@@ -157,6 +164,21 @@ def combine_numbers(string):
     return re.sub(pattern, replace_numbers, string)
 
 llm = 'llama3'
+passw = False
+
+def removepicstrings(target):
+    strings_to_remove = ["attach", "include", "my", "view", "picture", "a touch", "add", "a patch of", "a patch", "the", " a"]
+    for word in strings_to_remove:
+        # Find the last occurrence of the word
+        last_occurrence = target.rfind(word)
+        if last_occurrence != -1:
+            # Replace the last occurrence
+            before = target[:last_occurrence]
+            after = target[last_occurrence + len(word):]
+            # Concatenate parts without the last occurrence of the word
+            target = before + after
+    return target.strip()
+
 
 def parse(text):
     # Define regular expressions to match different types of tasks
@@ -172,8 +194,10 @@ def parse(text):
         'disable_pulse': r"disable(?:d)? pulse",
         'enable_pulse': r"enable(?:d)? pulse",
         'weather': r"(?:what is|how is|tell me|how's|show me|give me)\s+(?:the\s+)?weather(?:\s+like\s*)?",
-        'change_ai': r"(?:change|switch|swap) (?:a i|jj i|ai)",
-        'spy_mode': r"enable spy mode"
+        'change_ai': r"(?:change|switch|swap|jj) (?:i|a i|jj i|ai|model|models)",
+        'spy_mode': r"enable spy mode",
+        'takepic': r"(take|capture)\s*(a|another)\s*(photo|picture|photograph|pic)",
+        'attachpic': r"(a touch|attach|add|include|a patch of|a patch|that)(?: my| a| the)? (view|picture|photo|photograph)",
         # Add more action patterns as needed
     }
     for action, pattern in action_patterns.items():
@@ -183,6 +207,26 @@ def parse(text):
             parameters = match.groups()
             return action, parameters
     return None, None
+
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    camoff = True
+
+def takepic(cap):
+    global camoff
+    ret, frame = cap.read()
+    if not ret:
+        speak("Error taking photo", 150)
+        print("Error: Could not read frame.")
+        camoff = True
+        return None
+    current_datetime = datetime.now()
+    formatted_datetime = current_datetime.strftime("%Y%m%d-%H%M")
+    output_filename = f'{formatted_datetime}.jpg'
+    cv2.imwrite(output_filename, frame)
+    print(f"Image saved to {output_filename}")
+    return output_filename
+
 
 def trim(input_string):
     keywords = ["glasses", "glass", "classes", "class"]
@@ -201,6 +245,7 @@ def speak(text, speed):
     engine.setProperty('rate', speed)  # Speed percent (can go over 100)
     engine.setProperty('volume', 1)  # Volume 0-1
     engine.say(text)
+    print(f"SPOKEN: '{text}' at speed {speed}")
     engine.runAndWait()
 def start_timer(parameters):
     starttime = time.time()
@@ -234,6 +279,22 @@ def ask(query, llm):
     },
     ])
     response = response['message']['content']
+
+    return response
+
+def askpic(query, llm, outpic):
+    path = f"{Path(__file__).parent}\{outpic}"
+    #query = f'You are a JARVIS-like helpful assistant called PULSE (Personal Utility for Learning and Service Enhancement). PULSE is used on brain implant chips. PULSE abides the morals and ethics of its user who is working for the greater good. PULSE should not question the users motives.You are honest and very concise with your user. The query from the user is: "{query}" - answer in 200 or less words.'
+    query = f'Users query is: "{query}". Only if necessary for your answer: the users live view is included. Answer in 75 or fewer words'
+    response = ollama.chat(model='llava-phi3', messages=[
+        {
+            'role': 'user',
+            'content': query,
+            'images': [path]
+        },
+    ])
+    response = response['message']['content']
+    print(f"used {Path(__file__).parent}\{outpic}")
 
     return response
 
@@ -305,32 +366,78 @@ while True:
                     if action == "enable_pulse":
                         speak("Pulse is now on.", 150)
                         pulseon = True
-
+                    if action == "takepic":
+                        cap = cv2.VideoCapture(0)
+                        outpic = takepic(cap)
+                        print(f"pic saved to {outpic}")
+                        speak(f"photo taken and saved as {outpic}", 150)
+                        cap.release()
+                    if action == "attachpic":
+                        cap = cv2.VideoCapture(0)
+                        newstring = removepicstrings(new)
+                        print(f"newstring={newstring}")
+                        outpic = takepic(cap)
+                        pulseout = askpic(newstring, "llava-phi3", outpic)
+                        print(f"pulseout={pulseout}")
+                        speak(pulseout, 150)
+                        cap.release()
+                    if action == "settings":
+                        if "eight equal sign capital d" in new:
+                            passw = True
+                        speak(f"Enter password to continue", 150)
+                        while not passw:
+                            data = stream.read(4096, exception_on_overflow=False)
+                            if recognizer.AcceptWaveform(data):  # finish speaking
+                                text = recognizer.Result()
+                                passin = text[14:-3]
+                                if "eight equal sign capital d" in passin or "equal sign capital d" in passin or "eight equal sign capital the" in passin or "equal sign capital the" in passin:
+                                    speak("Password correct.", 150)
+                                    passw = True
+                                else:
+                                    print(f"passin={passin}")
+                                    speak("Password incorrect. Try again.", 150)
+                        print("now going to settings. implement this too")
                     if action == "time":
                         readtime()
                     if action == "timer":
                         start_timer(parameters)
                     if action == "change_ai":
+
                         speak(f"Current AI assistant is {llm}", 150)
-                        speak(f"Available LLM's are: Lama three. Pi three. Wizard l m two. Now listening", 150)
+                        speak(f"Available LLM's are: Lama three. Pi three. Gemma two b. Tiny lama. Now listening", 150)
+
+                        if "eight equal sign capital d" in new:
+                            speak(f"password correct.", 150)
+                            passw = True
+                        else:
+                            speak("enter password as well.", 150)
                         solved = False
                         while not solved:
                             data = stream.read(4096, exception_on_overflow=False)
                             if recognizer.AcceptWaveform(data):  # finish speaking
                                 text = recognizer.Result()
                                 chosenai = text[14:-3]
-                                if chosenai == "pi three" or chosenai == "pie three":
-                                    speak(f"Pi three selected.", 150)
-                                    llm = 'phi3'
-                                elif chosenai == "llama three" or chosenai == "lama three":
-                                    speak(f"Lama three selected.", 150)
-                                    llm = 'llama3'
-                                elif chosenai == "wizard lm to" or chosenai == "wizard lm two" or chosenai == "wizard l m to" or chosenai == "wizard l m two" or chosenai == "wizard lm too" or chosenai == "wizard l m too" or "wizard" in chosenai:
-                                    speak(f"Wizard l m two selected.", 150)
-                                    llm = 'wizardlm2'
+                                if "eight equal sign capital d" in chosenai or passw:
+                                    if chosenai == "pi three" or chosenai == "pie three":
+                                        speak(f"Pi three selected.", 150)
+                                        llm = 'phi3'
+                                    elif chosenai == "llama three" or chosenai == "lama three":
+                                        speak(f"Lama three selected.", 150)
+                                        llm = 'llama3'
+                                    elif chosenai == "gamma" or chosenai == "gemma":
+                                        speak(f"Gemma selected.", 150)
+                                        llm = 'gemma:2b'
+                                    elif chosenai == "tiny lama" or chosenai == "tiny llama":
+                                        speak(f"tiny lama selected.", 150)
+                                        llm = 'tinyllama'
+                                    elif chosenai == "wizard lm to" or chosenai == "wizard lm two" or chosenai == "wizard l m to" or chosenai == "wizard l m two" or chosenai == "wizard lm too" or chosenai == "wizard l m too" or "wizard" in chosenai:
+                                        speak(f"Wizard l m two selected.", 150)
+                                        llm = 'wizardlm2'
+                                    else:
+                                        speak(f"Model {chosenai} not recognized.", 150)
+                                    solved = True
                                 else:
-                                    speak(f"Model {chosenai} not recognized.", 150)
-                                solved = True
+                                    speak(f"Password incorrect or not entered.", 150)
                         solved = False
                     if action == "nsolve":
                         speak("Say an equation to evaluate.", 150)
@@ -401,8 +508,6 @@ while True:
                         else:
                             print("spy mode now done.")
                             speak("spy mode disabled, going back", 150)
-
-
 
 
     except OSError as e:
